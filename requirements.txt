@@ -1,0 +1,12 @@
+Flask
+moviepy
+openai-whisper
+googletrans==3.1.0a0
+SpeechRecognition
+pydub
+numpy
+torch
+torchaudio
+ffmpeg-python
+Pillow
+requests
