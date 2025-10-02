@@ -48,6 +48,7 @@ def upload_file():
         return redirect(request.url)
 
     file = request.files['file']
+    target_language = request.form.get('target_language', 'en')
     source_language = request.form.get('source_language', 'auto')
 
     if file.filename == '':
@@ -69,14 +70,15 @@ def upload_file():
             'progress': 0,
             'message': 'File uploaded successfully',
             'original_filename': filename,
-            'source_language': source_language
+            'source_language': source_language,
+            'target_language': target_language
         }
 
         # Start processing in background
         if FULL_PROCESSING:
-            thread = threading.Thread(target=process_video, args=(unique_id, filepath, source_language))
+            thread = threading.Thread(target=process_video, args=(unique_id, filepath, source_language, target_language))
         else:
-            thread = threading.Thread(target=process_video_demo, args=(unique_id, filepath, source_language))
+            thread = threading.Thread(target=process_video_demo, args=(unique_id, filepath, source_language, target_language))
         thread.daemon = True
         thread.start()
 
@@ -169,7 +171,7 @@ Your video now has English subtitles for every spoken word!
         flash('File not ready for download')
         return redirect(url_for('index'))
 
-def process_video(task_id, filepath, source_language):
+def process_video(task_id, filepath, source_language, target_language):
     """Full video processing with speech recognition and translation"""
     try:
         # Update status
@@ -204,10 +206,10 @@ def process_video(task_id, filepath, source_language):
                 os.remove(audio_path)
             raise Exception(f"Failed to transcribe audio: {transcribe_error}")
         processing_status[task_id]['progress'] = 60
-        processing_status[task_id]['message'] = 'Translating to English...'
+        processing_status[task_id]['message'] = f'Translating to {target_language}...'
 
-        # Translate to English
-        translated_segments = translator.translate_segments(transcription)
+        # Translate to target language
+        translated_segments = translator.translate_segments(transcription, target_language)
         processing_status[task_id]['progress'] = 75
         processing_status[task_id]['message'] = 'Optimizing subtitle timing...'
 
@@ -243,7 +245,7 @@ def process_video(task_id, filepath, source_language):
         processing_status[task_id]['message'] = f'Error: {str(e)}'
         print(f"Error processing video {task_id}: {str(e)}")
 
-def process_video_demo(task_id, filepath, source_language):
+def process_video_demo(task_id, filepath, source_language, target_language):
     """Demo version - simulates processing and creates sample subtitle"""
     try:
         # Update status - simulating processing steps
