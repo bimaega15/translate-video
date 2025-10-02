@@ -115,7 +115,7 @@ def download(task_id):
 
             # Add subtitle file if exists
             if os.path.exists(srt_path):
-                subtitle_name = f"{name_without_ext}_subtitles.srt"
+                subtitle_name = f"{name_without_ext}_translated.srt"
                 zipf.write(srt_path, subtitle_name)
 
             # Add instructions
