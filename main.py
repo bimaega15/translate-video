@@ -20,7 +20,7 @@ except ImportError as e:
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-change-this'
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024  # 10GB max file size
 
 # Create directories
 os.makedirs('static/uploads', exist_ok=True)
@@ -108,6 +108,11 @@ def download(task_id):
         # Get paths for video and subtitle
         srt_path = output_path.replace('.mp4', '.srt')
 
+        # Store file paths for cleanup after download
+        files_to_cleanup = [output_path, zip_path]
+        if os.path.exists(srt_path):
+            files_to_cleanup.append(srt_path)
+
         with zipfile.ZipFile(zip_path, 'w') as zipf:
             # Add video file
             video_name = f"{name_without_ext}_translated.mp4"
@@ -139,6 +144,25 @@ def download(task_id):
 Your video now has English subtitles for every spoken word!
 """
             zipf.writestr("README_How_to_use_subtitles.txt", instructions)
+
+        # Function to cleanup files after download
+        def cleanup_files():
+            try:
+                for file_path in files_to_cleanup:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        print(f"Cleaned up: {file_path}")
+                # Remove task from processing status
+                if task_id in processing_status:
+                    del processing_status[task_id]
+                print(f"Task {task_id} cleaned up successfully")
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
+
+        # Schedule cleanup after short delay to ensure download completes
+        cleanup_thread = threading.Thread(target=lambda: (time.sleep(5), cleanup_files()))
+        cleanup_thread.daemon = True
+        cleanup_thread.start()
 
         return send_file(zip_path, as_attachment=True, download_name=zip_filename)
     else:
