@@ -6,7 +6,8 @@
       "Bash(findstr:*)",
       "Bash(pip uninstall:*)",
       "Bash(dir:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(ffmpeg:*)"
     ],
     "deny": [],
     "ask": []

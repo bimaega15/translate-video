@@ -16,40 +16,75 @@ class Transcriber:
     def _ensure_model_loaded(self):
         """Lazy load the model to avoid initialization issues"""
         if self.model is None:
-            print("Loading Whisper tiny model for faster processing...")
-            self.model = whisper.load_model("tiny", device=self.device)
+            print("Loading Whisper base model for better accuracy and timing...")
+            self.model = whisper.load_model("base", device=self.device)
             print("Whisper model loaded successfully")
 
-    def _load_audio_with_pydub(self, audio_path):
-        """Load audio using pydub as alternative to FFmpeg"""
+    def _load_audio_with_soundfile(self, audio_path):
+        """Load audio using soundfile - no FFmpeg dependency required"""
         try:
-            from pydub import AudioSegment
-            print(f"Loading audio with pydub: {audio_path}")
+            import soundfile as sf
+            import librosa
+            print(f"Loading audio with soundfile: {audio_path}")
 
-            # Load with pydub
-            audio_segment = AudioSegment.from_wav(audio_path)
+            # Validate file exists and has content
+            if not os.path.exists(audio_path):
+                raise Exception(f"Audio file does not exist: {audio_path}")
 
-            # Convert to mono if stereo
-            if audio_segment.channels > 1:
-                audio_segment = audio_segment.set_channels(1)
+            file_size = os.path.getsize(audio_path)
+            if file_size == 0:
+                raise Exception(f"Audio file is empty: {audio_path}")
 
-            # Convert to 16kHz
-            audio_segment = audio_segment.set_frame_rate(16000)
+            print(f"Audio file size: {file_size} bytes")
 
-            # Convert to numpy array
-            audio_data = np.array(audio_segment.get_array_of_samples())
+            try:
+                # Load audio with soundfile
+                audio_data, sample_rate = sf.read(audio_path, dtype='float32')
+                print(f"Audio loaded: sample_rate={sample_rate}Hz, channels={audio_data.ndim}, shape={audio_data.shape}")
 
-            # Normalize to [-1, 1] range
-            audio_data = audio_data.astype(np.float32) / 32768.0
+                # Convert to mono if stereo
+                if audio_data.ndim > 1:
+                    print("Converting stereo to mono")
+                    audio_data = np.mean(audio_data, axis=1)
 
-            print(f"Audio loaded: duration={len(audio_data)/16000:.2f}s, shape={audio_data.shape}")
-            return audio_data
+                # Resample to 16kHz for Whisper if needed
+                if sample_rate != 16000:
+                    print(f"Resampling from {sample_rate}Hz to 16000Hz")
+                    audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000)
+
+                # Ensure audio is in proper range [-1, 1]
+                if audio_data.max() > 1.0 or audio_data.min() < -1.0:
+                    print("Normalizing audio to [-1, 1] range")
+                    audio_data = audio_data / np.max(np.abs(audio_data))
+
+                duration = len(audio_data) / 16000
+                print(f"Audio processed successfully: duration={duration:.2f}s, shape={audio_data.shape}, range=[{audio_data.min():.3f}, {audio_data.max():.3f}]")
+
+                if duration < 0.1:
+                    raise Exception(f"Audio too short: {duration:.2f}s")
+
+                return audio_data
+
+            except Exception as sf_error:
+                print(f"Soundfile failed: {sf_error}")
+                # Fallback to librosa
+                try:
+                    print("Trying with librosa as fallback...")
+                    audio_data, sample_rate = librosa.load(audio_path, sr=16000, mono=True)
+                    duration = len(audio_data) / 16000
+                    print(f"Librosa fallback successful: duration={duration:.2f}s, shape={audio_data.shape}")
+                    return audio_data
+                except Exception as librosa_error:
+                    raise Exception(f"Both soundfile and librosa failed: {librosa_error}")
+
         except Exception as e:
-            print(f"Error loading audio with pydub: {e}")
+            print(f"Error loading audio: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def transcribe(self, audio_path, source_language="auto"):
-        """Transcribe audio file to text with timestamps"""
+        """Transcribe audio file to text with word-level timestamps for better sync"""
         try:
             # Ensure model is loaded
             self._ensure_model_loaded()
@@ -60,68 +95,127 @@ class Transcriber:
             print(f"Transcribing audio file: {audio_path}")
             print(f"Source language: {source_language}")
 
-            # Load audio manually to avoid FFmpeg dependency
-            audio_data = self._load_audio_with_pydub(audio_path)
-            if audio_data is None:
-                raise Exception("Could not load audio file")
-
             # Set language parameter
             language_param = None if source_language == "auto" else source_language
 
-            # Process audio in chunks for better performance
-            print("Starting transcription with manual audio loading...")
-            segments = []
-            chunk_size = 16000 * 30  # 30 seconds at 16kHz
+            # Check if file exists and is accessible
+            if not os.path.isfile(audio_path):
+                raise Exception(f"Audio file does not exist: {audio_path}")
 
-            for i in range(0, len(audio_data), chunk_size):
-                chunk = audio_data[i:i+chunk_size]
+            # Load audio manually to avoid FFmpeg dependency issues
+            print("Loading audio with soundfile for Whisper compatibility...")
+            audio_data = self._load_audio_with_soundfile(audio_path)
+            if audio_data is None:
+                raise Exception("Could not load audio file")
 
-                if len(chunk) == 0:
-                    continue
+            print("Starting transcription with loaded audio data...")
 
-                # Pad chunk if needed
-                if len(chunk) < chunk_size:
-                    chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
-
-                print(f"Processing chunk {i//chunk_size + 1}...")
-
+            try:
+                # Transcribe with word timestamps using audio array
+                result = self.model.transcribe(
+                    audio_data,
+                    language=language_param,
+                    word_timestamps=True,
+                    temperature=0.0,
+                    best_of=1,
+                    beam_size=1,
+                    patience=1.0,
+                    length_penalty=1.0,
+                    suppress_tokens="-1",
+                    initial_prompt=None,
+                    condition_on_previous_text=True,
+                    fp16=torch.cuda.is_available(),
+                    compression_ratio_threshold=2.4,
+                    logprob_threshold=-1.0,
+                    no_speech_threshold=0.6
+                )
+                print("Transcription with word timestamps successful")
+            except Exception as transcribe_error:
+                print(f"Error during word-level transcription: {transcribe_error}")
+                # Fallback to basic transcription without word timestamps
+                print("Falling back to basic transcription without word timestamps...")
                 try:
-                    # Use Whisper's internal mel spectrogram
-                    mel = whisper.log_mel_spectrogram(chunk, self.model.dims.n_mels)
-
-                    # Detect language if auto
-                    if language_param is None:
-                        _, probs = self.model.detect_language(mel)
-                        detected_lang = max(probs, key=probs.get)
-                        print(f"Detected language: {detected_lang}")
-                    else:
-                        detected_lang = language_param
-
-                    # Decode
-                    options = whisper.DecodingOptions(
-                        language=detected_lang,
-                        without_timestamps=False,
-                        task="transcribe"
+                    result = self.model.transcribe(
+                        audio_data,
+                        language=language_param,
+                        word_timestamps=False
                     )
-                    result_chunk = whisper.decode(self.model, mel, options)
+                    print("Basic transcription successful")
+                except Exception as basic_error:
+                    print(f"Error during basic transcription: {basic_error}")
+                    raise Exception(f"Both word-level and basic transcription failed: {basic_error}")
 
-                    if result_chunk.text.strip():
-                        start_time = i / 16000
-                        end_time = min((i + chunk_size) / 16000, len(audio_data) / 16000)
+            segments = []
+
+            # Process each segment from Whisper result
+            for segment in result['segments']:
+                # If word-level timestamps are available, use them for better accuracy
+                if 'words' in segment and segment['words']:
+                    # Group words into phrases for better readability
+                    current_phrase = []
+                    phrase_start = None
+
+                    for word_info in segment['words']:
+                        word_text = word_info.get('word', '').strip()
+                        word_start = word_info.get('start', 0)
+                        word_end = word_info.get('end', 0)
+
+                        if not word_text:
+                            continue
+
+                        if phrase_start is None:
+                            phrase_start = word_start
+
+                        current_phrase.append(word_text)
+
+                        # End phrase on punctuation or when reaching optimal length
+                        phrase_text = ' '.join(current_phrase)
+                        should_end_phrase = (
+                            word_text.endswith(('.', '!', '?', ',', ';')) or
+                            len(phrase_text) > 50 or
+                            len(current_phrase) >= 8
+                        )
+
+                        if should_end_phrase and current_phrase:
+                            segments.append({
+                                "start": phrase_start,
+                                "end": word_end,
+                                "text": phrase_text.strip(),
+                                "language": result.get('language', 'unknown'),
+                                "confidence": segment.get('avg_logprob', 0.0)
+                            })
+
+                            current_phrase = []
+                            phrase_start = None
+
+                    # Add remaining words as final phrase
+                    if current_phrase and phrase_start is not None:
+                        final_phrase = ' '.join(current_phrase)
+                        # Use the last word's end time or segment end time
+                        final_end = segment['words'][-1].get('end', segment['end'])
 
                         segments.append({
-                            "start": start_time,
-                            "end": end_time,
-                            "text": result_chunk.text.strip(),
-                            "language": detected_lang
+                            "start": phrase_start,
+                            "end": final_end,
+                            "text": final_phrase.strip(),
+                            "language": result.get('language', 'unknown'),
+                            "confidence": segment.get('avg_logprob', 0.0)
                         })
-                        print(f"  Transcribed: {result_chunk.text.strip()[:50]}...")
+                else:
+                    # Fallback to segment-level timestamps if word-level not available
+                    segments.append({
+                        "start": segment['start'],
+                        "end": segment['end'],
+                        "text": segment['text'].strip(),
+                        "language": result.get('language', 'unknown'),
+                        "confidence": segment.get('avg_logprob', 0.0)
+                    })
 
-                except Exception as chunk_error:
-                    print(f"Error processing chunk: {chunk_error}")
-                    continue
+            print(f"Transcription completed. Found {len(segments)} segments with precise timing")
 
-            print(f"Transcription completed. Found {len(segments)} segments")
+            # Sort segments by start time to ensure proper order
+            segments.sort(key=lambda x: x['start'])
+
             return segments
 
         except Exception as e:

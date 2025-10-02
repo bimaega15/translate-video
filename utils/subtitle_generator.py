@@ -61,8 +61,8 @@ class SubtitleGenerator:
 
         return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}.{milliseconds:03d}"
 
-    def merge_short_segments(self, segments, min_duration=1.0, max_chars=80):
-        """Merge short segments for better readability"""
+    def merge_short_segments(self, segments, min_duration=1.2, max_chars=60):
+        """Merge short segments for better readability with improved timing for better sync"""
         merged_segments = []
         current_segment = None
 
@@ -73,10 +73,21 @@ class SubtitleGenerator:
                 current_segment = segment.copy()
             elif (duration < min_duration and
                   len(current_segment['text'] + ' ' + segment['text']) <= max_chars and
-                  segment['start'] - current_segment['end'] < 2.0):
+                  segment['start'] - current_segment['end'] < 0.5):  # Smaller gap for better sync
                 # Merge with current segment
                 current_segment['text'] += ' ' + segment['text']
                 current_segment['end'] = segment['end']
+
+                # More conservative timing based on actual speech patterns
+                word_count = len(current_segment['text'].split())
+                reading_speed = 2.5  # Slower reading speed for better sync
+                optimal_duration = max(min_duration, word_count / reading_speed)
+
+                # Keep original timing but ensure minimum duration
+                if current_segment['end'] - current_segment['start'] < optimal_duration:
+                    # Extend end time slightly but respect original audio timing
+                    extension = min(0.3, optimal_duration - (current_segment['end'] - current_segment['start']))
+                    current_segment['end'] += extension
             else:
                 # Save current segment and start new one
                 merged_segments.append(current_segment)
@@ -87,8 +98,8 @@ class SubtitleGenerator:
 
         return merged_segments
 
-    def split_long_segments(self, segments, max_chars=80, max_duration=5.0):
-        """Split long segments for better readability"""
+    def split_long_segments(self, segments, max_chars=60, max_duration=4.0):
+        """Split long segments for better readability with preserved original timing"""
         split_segments = []
 
         for segment in segments:
@@ -96,36 +107,108 @@ class SubtitleGenerator:
             duration = segment['end'] - segment['start']
 
             if len(text) <= max_chars and duration <= max_duration:
-                split_segments.append(segment)
+                # Keep original timing for segments that don't need splitting
+                split_segments.append(segment.copy())
                 continue
 
-            # Split long text
+            # Split long text while preserving original timing proportions
             words = text.split()
             current_text = ""
-            current_start = segment['start']
-            word_duration = duration / len(words)
+            word_positions = []
 
+            # Calculate word positions within the original segment timing
             for i, word in enumerate(words):
-                if len(current_text + ' ' + word) <= max_chars:
-                    current_text += (' ' + word) if current_text else word
-                else:
-                    if current_text:
-                        current_end = current_start + (len(current_text.split()) * word_duration)
-                        split_segments.append({
-                            'start': current_start,
-                            'end': current_end,
-                            'text': current_text,
-                            'original_text': segment.get('original_text', text)
-                        })
-                        current_start = current_end
-                        current_text = word
+                word_start_ratio = i / len(words)
+                word_end_ratio = (i + 1) / len(words)
 
-            if current_text:
-                split_segments.append({
-                    'start': current_start,
-                    'end': segment['end'],
-                    'text': current_text,
-                    'original_text': segment.get('original_text', text)
+                word_start_time = segment['start'] + (duration * word_start_ratio)
+                word_end_time = segment['start'] + (duration * word_end_ratio)
+
+                word_positions.append({
+                    'word': word,
+                    'start': word_start_time,
+                    'end': word_end_time
                 })
 
-        return split_segments
+            # Group words into appropriately sized segments
+            current_words = []
+            current_start_time = None
+
+            for word_info in word_positions:
+                test_text = current_text + (' ' + word_info['word'] if current_text else word_info['word'])
+
+                if len(test_text) <= max_chars:
+                    current_text = test_text
+                    current_words.append(word_info)
+                    if current_start_time is None:
+                        current_start_time = word_info['start']
+                else:
+                    if current_words:
+                        # Create segment with original timing
+                        current_end_time = current_words[-1]['end']
+
+                        split_segments.append({
+                            'start': current_start_time,
+                            'end': current_end_time,
+                            'text': current_text.strip(),
+                            'original_text': segment.get('original_text', text),
+                            'confidence': segment.get('confidence', 0.0)
+                        })
+
+                        # Start new segment
+                        current_text = word_info['word']
+                        current_words = [word_info]
+                        current_start_time = word_info['start']
+
+            # Add final segment if any words remain
+            if current_words:
+                current_end_time = current_words[-1]['end']
+
+                split_segments.append({
+                    'start': current_start_time,
+                    'end': current_end_time,
+                    'text': current_text.strip(),
+                    'original_text': segment.get('original_text', text),
+                    'confidence': segment.get('confidence', 0.0)
+                })
+
+        # Minimal timing optimization to prevent overlaps only
+        return self._preserve_original_timing(split_segments)
+
+    def _preserve_original_timing(self, segments):
+        """Preserve original timing while preventing overlaps minimally"""
+        if not segments:
+            return segments
+
+        optimized = []
+
+        for i, segment in enumerate(segments):
+            current_segment = segment.copy()
+
+            # Only fix overlaps, preserve original timing as much as possible
+            if optimized and current_segment['start'] < optimized[-1]['end']:
+                # Minimal adjustment - just prevent overlap
+                gap = 0.02  # Very small gap (20ms)
+                current_segment['start'] = optimized[-1]['end'] + gap
+
+                # Maintain original duration if possible
+                original_duration = segment['end'] - segment['start']
+                current_segment['end'] = current_segment['start'] + original_duration
+
+            # Prevent overlap with next segment with minimal adjustment
+            if i < len(segments) - 1:
+                next_start = segments[i + 1]['start']
+                if current_segment['end'] > next_start - 0.02:
+                    current_segment['end'] = next_start - 0.02
+
+            optimized.append(current_segment)
+
+        return optimized
+
+    def _optimize_single_segment_timing(self, segment):
+        """Minimal optimization - preserve original timing"""
+        return segment.copy()
+
+    def _optimize_segment_timing(self, segments):
+        """Legacy method - use _preserve_original_timing instead"""
+        return self._preserve_original_timing(segments)

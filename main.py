@@ -160,22 +160,42 @@ def process_video(task_id, filepath, source_language):
         subtitle_generator = SubtitleGenerator()
 
         # Extract audio
-        audio_path = video_processor.extract_audio(filepath)
-        processing_status[task_id]['progress'] = 30
-        processing_status[task_id]['message'] = 'Transcribing speech...'
+        try:
+            audio_path = video_processor.extract_audio(filepath)
+            print(f"Audio extracted to: {audio_path}")
+            processing_status[task_id]['progress'] = 30
+            processing_status[task_id]['message'] = 'Transcribing speech...'
+        except Exception as audio_error:
+            print(f"Audio extraction error: {audio_error}")
+            raise Exception(f"Failed to extract audio: {audio_error}")
 
         # Transcribe audio
-        transcription = transcriber.transcribe(audio_path, source_language)
+        try:
+            transcription = transcriber.transcribe(audio_path, source_language)
+            print(f"Transcription completed with {len(transcription)} segments")
+        except Exception as transcribe_error:
+            print(f"Transcription error: {transcribe_error}")
+            # Clean up audio file on error
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+            raise Exception(f"Failed to transcribe audio: {transcribe_error}")
         processing_status[task_id]['progress'] = 60
         processing_status[task_id]['message'] = 'Translating to English...'
 
         # Translate to English
         translated_segments = translator.translate_segments(transcription)
+        processing_status[task_id]['progress'] = 75
+        processing_status[task_id]['message'] = 'Optimizing subtitle timing...'
+
+        # Optimize subtitle timing for better audio-video sync
+        optimized_segments = subtitle_generator.merge_short_segments(translated_segments)
+        optimized_segments = subtitle_generator.split_long_segments(optimized_segments)
+
         processing_status[task_id]['progress'] = 80
         processing_status[task_id]['message'] = 'Generating subtitles...'
 
-        # Generate subtitle file
-        srt_path = subtitle_generator.create_srt(translated_segments, task_id)
+        # Generate subtitle file with optimized timing
+        srt_path = subtitle_generator.create_srt(optimized_segments, task_id)
         processing_status[task_id]['progress'] = 90
         processing_status[task_id]['message'] = 'Adding subtitles to video...'
 

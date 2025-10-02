@@ -13,23 +13,47 @@ class VideoProcessor:
         """Extract audio from video file and save as WAV"""
         try:
             print(f"Loading video: {video_path}")
+
+            # Check if video file exists
+            if not os.path.isfile(video_path):
+                raise Exception(f"Video file not found: {video_path}")
+
             video = mp.VideoFileClip(video_path)
 
-            # Create temporary audio file
+            # Create temporary audio file with absolute path
             audio_filename = f"audio_{os.path.basename(video_path).split('.')[0]}.wav"
-            audio_path = os.path.join(self.temp_dir, audio_filename)
+            audio_path = os.path.abspath(os.path.join(self.temp_dir, audio_filename))
 
             print(f"Extracting audio to: {audio_path}")
 
-            # Extract and save audio
+            # Extract and save audio with specific parameters for Whisper compatibility
             audio = video.audio
-            audio.write_audiofile(audio_path, verbose=False, logger=None)
+            if audio is None:
+                raise Exception("No audio track found in video")
+
+            # Save audio with settings compatible with Whisper
+            audio.write_audiofile(
+                audio_path,
+                verbose=False,
+                logger=None,
+                codec='pcm_s16le',  # 16-bit PCM for better compatibility
+                ffmpeg_params=['-ar', '16000']  # 16kHz sample rate for Whisper
+            )
 
             # Close video and audio clips
             audio.close()
             video.close()
 
+            # Verify the audio file was created successfully
+            if not os.path.exists(audio_path):
+                raise Exception(f"Audio extraction failed - file not created: {audio_path}")
+
+            if os.path.getsize(audio_path) == 0:
+                raise Exception(f"Audio extraction failed - empty file: {audio_path}")
+
+            print(f"Audio extracted successfully: {audio_path} ({os.path.getsize(audio_path)} bytes)")
             return audio_path
+
         except Exception as e:
             raise Exception(f"Error extracting audio: {str(e)}")
 
