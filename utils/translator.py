@@ -33,14 +33,14 @@ class Translator:
             print(f"Translation error: {e}")
             return f"[Translation: {text}]"
 
-    def translate_segments(self, segments):
-        """Translate segments to English"""
+    def translate_segments(self, segments, target_language='en'):
+        """Translate segments to target language"""
         translated_segments = []
 
         for segment in segments:
             try:
-                # Skip if already in English
-                if segment.get('language') == 'en':
+                # Skip if already in target language
+                if segment.get('language') == target_language:
                     translated_segments.append({
                         'start': segment['start'],
                         'end': segment['end'],
@@ -55,14 +55,14 @@ class Translator:
                 if not text.strip():
                     continue
 
-                # Translate to English using MyMemory API
+                # Translate to target language using MyMemory API
                 source_lang = segment.get('language', 'id')
-                if source_lang == 'en':
-                    # Already English
+                if source_lang == target_language:
+                    # Already in target language
                     translated_text = text
                 else:
-                    # Translate from source language to English
-                    translated_text = self._translate_with_mymemory(text, source_lang, 'en')
+                    # Translate from source language to target language
+                    translated_text = self._translate_with_mymemory(text, source_lang, target_language)
 
                 translated_segments.append({
                     'start': segment['start'],
